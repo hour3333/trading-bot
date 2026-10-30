@@ -1,0 +1,27 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+secrets/
+.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+*.token
+*.credentials
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Build output and local application data
+/build/
+/cmake-build-*/
+/data/
+
+# macOS / editor files
+.DS_Store
+.vscode/
