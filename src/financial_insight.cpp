@@ -47,6 +47,10 @@ std::uint64_t fnv1a(std::string_view value) {
     return hash;
 }
 
+nlohmann::json optionalNumber(const std::optional<double>& value) {
+    return value ? nlohmann::json(*value) : nlohmann::json(nullptr);
+}
+
 std::string cacheKey(std::string_view model, std::string_view task,
                      std::string_view userData) {
     const std::string material = std::string(kPromptVersion) + "|" + std::string(model) + "|" +
@@ -99,20 +103,20 @@ nlohmann::json analysisData(std::span<const TechnicalAnalysisResult> analyses,
         };
         if (result.status == AnalysisStatus::Complete) {
             row["latest_candle_end_utc"] = formatUtc(result.latestCandleEnd);
-            row["latest_close"] = result.latestClose;
+            row["latest_close"] = optionalNumber(result.latestClose);
             row["trend_classification"] = trendClassificationName(result.trend);
-            row["sma"] = result.sma;
-            row["ema_20"] = result.ema20;
-            row["ema_50"] = result.ema50;
-            row["ema_fast"] = result.emaFast;
-            row["ema_slow"] = result.emaSlow;
-            row["rsi"] = result.rsi;
+            row["sma"] = optionalNumber(result.sma);
+            row["ema_20"] = optionalNumber(result.ema20);
+            row["ema_50"] = optionalNumber(result.ema50);
+            row["ema_fast"] = optionalNumber(result.emaFast);
+            row["ema_slow"] = optionalNumber(result.emaSlow);
+            row["rsi"] = optionalNumber(result.rsi);
             row["macd"] = {
                 {"line", result.macd->line},
                 {"signal", result.macd->signal},
                 {"histogram", result.macd->histogram},
             };
-            row["atr"] = result.atr;
+            row["atr"] = optionalNumber(result.atr);
             row["prior_window_support"] = result.supportResistance->support;
             row["prior_window_resistance"] = result.supportResistance->resistance;
             row["delayed"] = result.delayed;
