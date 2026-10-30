@@ -8,6 +8,7 @@
     "pkg-config"
   ],
   "deploy": {
-    "aptPackages": ["libcurl4", "libsqlite3-0", "libxml2"]
+    "aptPackages": ["libcurl4", "libsqlite3-0", "libxml2", "ca-certificates"],
+    "startCommand": "/build/trading_bot"
   }
 }
