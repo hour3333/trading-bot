@@ -19,6 +19,7 @@ secrets/
 
 # Build output and local application data
 /build/
+/build-linux-arm64/
 /cmake-build-*/
 /data/
 

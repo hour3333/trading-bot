@@ -57,6 +57,15 @@ std::vector<double> emaSeries(std::span<const double> values, std::size_t period
 }
 
 std::optional<MarketTimeframe> parseTimeframe(std::string_view interval) {
+    if (interval == "5m") {
+        return MarketTimeframe::M5;
+    }
+    if (interval == "15m") {
+        return MarketTimeframe::M15;
+    }
+    if (interval == "1h") {
+        return MarketTimeframe::H1;
+    }
     if (interval == "30m" || interval == "30-minute provider candle") {
         return MarketTimeframe::M30;
     }
@@ -72,6 +81,12 @@ std::optional<MarketTimeframe> parseTimeframe(std::string_view interval) {
 std::chrono::system_clock::duration timeframeDuration(MarketTimeframe timeframe) {
     using namespace std::chrono;
     switch (timeframe) {
+    case MarketTimeframe::M5:
+        return minutes(5);
+    case MarketTimeframe::M15:
+        return minutes(15);
+    case MarketTimeframe::H1:
+        return hours(1);
     case MarketTimeframe::M30:
         return minutes(30);
     case MarketTimeframe::H4:
@@ -86,7 +101,10 @@ std::optional<std::size_t> minimumCandles(const TechnicalAnalysisSettings& setti
     const auto validPeriod = [](std::size_t period) {
         return period > 0 && period <= kMaximumPeriod;
     };
-    if (!validPeriod(settings.smaPeriod) || !validPeriod(settings.fastEmaPeriod) ||
+    if (!validPeriod(settings.smaPeriod) || !validPeriod(settings.trendFastEmaPeriod) ||
+        !validPeriod(settings.trendSlowEmaPeriod) ||
+        settings.trendFastEmaPeriod >= settings.trendSlowEmaPeriod ||
+        !validPeriod(settings.fastEmaPeriod) ||
         !validPeriod(settings.slowEmaPeriod) || settings.fastEmaPeriod >= settings.slowEmaPeriod ||
         !validPeriod(settings.rsiPeriod) || !validPeriod(settings.macdSignalPeriod) ||
         !validPeriod(settings.atrPeriod) || !validPeriod(settings.supportResistanceLookback)) {
@@ -102,7 +120,7 @@ std::optional<std::size_t> minimumCandles(const TechnicalAnalysisSettings& setti
     if (settings.supportResistanceLookback == kMaximumPeriod) {
         return std::nullopt;
     }
-    return std::max({settings.smaPeriod, settings.slowEmaPeriod,
+    return std::max({settings.smaPeriod, settings.trendSlowEmaPeriod, settings.slowEmaPeriod,
                      settings.rsiPeriod + 1, macdHistory, settings.atrPeriod + 1,
                      settings.supportResistanceLookback + 1});
 }
@@ -373,6 +391,8 @@ TechnicalAnalysisResult TechnicalAnalysis::analyze(
     }
     result.latestClose = closes.back();
     result.sma = sma(closes, settings.smaPeriod);
+    result.ema20 = ema(closes, settings.trendFastEmaPeriod);
+    result.ema50 = ema(closes, settings.trendSlowEmaPeriod);
     result.emaFast = ema(closes, settings.fastEmaPeriod);
     result.emaSlow = ema(closes, settings.slowEmaPeriod);
     result.rsi = rsi(closes, settings.rsiPeriod);
@@ -380,7 +400,8 @@ TechnicalAnalysisResult TechnicalAnalysis::analyze(
                        settings.macdSignalPeriod);
     result.atr = atr(candles, settings.atrPeriod);
     result.supportResistance = supportResistance(candles, settings.supportResistanceLookback);
-    if (!result.sma || !result.emaFast || !result.emaSlow || !result.rsi || !result.macd ||
+    if (!result.sma || !result.ema20 || !result.ema50 || !result.emaFast ||
+        !result.emaSlow || !result.rsi || !result.macd ||
         !result.atr || !result.supportResistance) {
         return invalid(std::move(result), "indicator calculation failed validation");
     }
@@ -388,10 +409,10 @@ TechnicalAnalysisResult TechnicalAnalysis::analyze(
     const double latestClose = closes.back();
     const double macdTolerance = 1e-12 *
         std::max({1.0, std::abs(result.macd->line), std::abs(result.macd->signal)});
-    if (latestClose > *result.emaFast && *result.emaFast > *result.emaSlow &&
+    if (latestClose > *result.ema20 && *result.ema20 > *result.ema50 &&
         result.macd->line + macdTolerance >= result.macd->signal && *result.rsi > 50.0) {
         result.trend = TrendClassification::Bullish;
-    } else if (latestClose < *result.emaFast && *result.emaFast < *result.emaSlow &&
+    } else if (latestClose < *result.ema20 && *result.ema20 < *result.ema50 &&
                result.macd->line <= result.macd->signal + macdTolerance && *result.rsi < 50.0) {
         result.trend = TrendClassification::Bearish;
     } else {
@@ -403,6 +424,12 @@ TechnicalAnalysisResult TechnicalAnalysis::analyze(
 
 std::string marketTimeframeName(MarketTimeframe timeframe) {
     switch (timeframe) {
+    case MarketTimeframe::M5:
+        return "5m";
+    case MarketTimeframe::M15:
+        return "15m";
+    case MarketTimeframe::H1:
+        return "1h";
     case MarketTimeframe::M30:
         return "30m";
     case MarketTimeframe::H4:
@@ -463,6 +490,8 @@ std::string formatTechnicalAnalysisMessage(const TechnicalAnalysisResult& result
            << "Latest close: " << formatValue(*result.latestClose) << '\n'
            << "Trend classification: " << trendClassificationName(result.trend) << '\n'
            << "SMA(" << result.settings.smaPeriod << "): " << formatValue(*result.sma) << '\n'
+           << "EMA(20): " << formatValue(*result.ema20) << '\n'
+           << "EMA(50): " << formatValue(*result.ema50) << '\n'
            << "EMA(" << result.settings.fastEmaPeriod << "): "
            << formatValue(*result.emaFast) << '\n'
            << "EMA(" << result.settings.slowEmaPeriod << "): "

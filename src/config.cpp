@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <initializer_list>
 #include <string_view>
 #include <system_error>
 #include <sys/stat.h>
@@ -128,12 +129,16 @@ void validateSecretFilePermissions(const std::filesystem::path& path,
 }
 
 void overlayProcessEnvironment(std::unordered_map<std::string, std::string>& values) {
-    constexpr std::array<std::string_view, 16> keys{
+    constexpr std::array<std::string_view, 27> keys{
         "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USER_IDS", "TELEGRAM_LONG_POLL_TIMEOUT_SECONDS",
         "GEMINI_API_KEY", "COINGECKO_DEMO_API_KEY", "GOLD_API_KEY", "BOT_DATABASE_PATH",
         "BOT_HTTP_TIMEOUT_SECONDS", "BOT_LOG_LEVEL", "BACKTEST_STARTING_BALANCE",
         "BACKTEST_FEE_BPS", "BACKTEST_SLIPPAGE_BPS", "BACKTEST_RISK_FRACTION",
-        "BOT_MARKET_CHECK_INTERVAL_SECONDS", "BOT_NEWS_CHECK_INTERVAL_SECONDS", "BOT_TIMEZONE"};
+        "BOT_MARKET_CHECK_INTERVAL_SECONDS", "BOT_NEWS_CHECK_INTERVAL_SECONDS",
+        "BOT_NEWS_ALERTS_PER_HOUR", "BOT_NEWS_GEMINI_SUMMARIES_PER_HOUR", "BOT_TIMEZONE",
+        "BOT_SIGNAL_MARKET", "BOT_SIGNAL_TIMEFRAME", "BOT_ALERT_MODE", "BOT_TRADING_MODE",
+        "BOT_AI_PROVIDER", "BOT_AUTO_SIGNAL_ANALYSIS", "BOT_ALLOW_DUPLICATE_SIGNAL_ALERTS",
+        "BOT_SIGNAL_ALERT_COOLDOWN_SECONDS", "BOT_SIGNAL_MIN_RISK_REWARD"};
     for (const auto key : keys) {
         if (const char* value = std::getenv(std::string(key).c_str()); value != nullptr) {
             values.insert_or_assign(std::string(key), value);
@@ -195,6 +200,36 @@ double parseDouble(const std::unordered_map<std::string, std::string>& values,
     return value;
 }
 
+bool parseBoolean(const std::unordered_map<std::string, std::string>& values,
+                  const char* key, bool defaultValue) {
+    const auto found = values.find(key);
+    if (found == values.end()) return defaultValue;
+    std::string value = found->second;
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    if (value == "TRUE" || value == "1" || value == "YES") return true;
+    if (value == "FALSE" || value == "0" || value == "NO") return false;
+    throw AppError(ErrorCode::Configuration,
+                   std::string(key) + " must be true or false");
+}
+
+std::string parseChoice(const std::unordered_map<std::string, std::string>& values,
+                        const char* key, std::string defaultValue,
+                        std::initializer_list<std::string_view> accepted) {
+    const auto found = values.find(key);
+    if (found == values.end()) return defaultValue;
+    std::string value = found->second;
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    if (std::find(accepted.begin(), accepted.end(), value) == accepted.end()) {
+        throw AppError(ErrorCode::Configuration,
+                       std::string(key) + " has an unsupported value");
+    }
+    return value;
+}
+
 } // namespace
 
 Config Config::load(const std::filesystem::path& dotenvPath) {
@@ -213,6 +248,23 @@ Config Config::fromValues(const std::unordered_map<std::string, std::string>& va
     config.geminiApiKey = optionalValue(values, "GEMINI_API_KEY");
     config.coingeckoDemoApiKey = optionalValue(values, "COINGECKO_DEMO_API_KEY");
     config.goldApiKey = optionalValue(values, "GOLD_API_KEY");
+    config.signalMarket = parseChoice(values, "BOT_SIGNAL_MARKET", "XAU/USD", {"XAU/USD"});
+    config.signalTimeframe = parseChoice(values, "BOT_SIGNAL_TIMEFRAME", "M5",
+                                          {"M5", "M15", "H1", "H4"});
+    config.alertMode = parseChoice(values, "BOT_ALERT_MODE", "CONFIRMED_ONLY",
+                                    {"CONFIRMED_ONLY", "OFF"});
+    config.tradingMode = parseChoice(values, "BOT_TRADING_MODE", "PAPER_ONLY", {"PAPER_ONLY"});
+    config.aiProvider = parseChoice(values, "BOT_AI_PROVIDER", "GEMINI", {"GEMINI"});
+    config.automaticSignalAnalysis = parseBoolean(values, "BOT_AUTO_SIGNAL_ANALYSIS", true);
+    config.allowDuplicateSignalAlerts = parseBoolean(
+        values, "BOT_ALLOW_DUPLICATE_SIGNAL_ALERTS", false);
+    config.signalMinimumRiskReward = parseDouble(
+        values, "BOT_SIGNAL_MIN_RISK_REWARD", config.signalMinimumRiskReward);
+    if (!std::isfinite(config.signalMinimumRiskReward) || config.signalMinimumRiskReward < 0.5 ||
+        config.signalMinimumRiskReward > 10.0) {
+        throw AppError(ErrorCode::Configuration,
+                       "BOT_SIGNAL_MIN_RISK_REWARD must be between 0.5 and 10");
+    }
 
     if (const auto found = values.find("BOT_DATABASE_PATH");
         found != values.end() && !found->second.empty()) {
@@ -263,6 +315,30 @@ Config Config::fromValues(const std::unordered_map<std::string, std::string>& va
         "BOT_MARKET_CHECK_INTERVAL_SECONDS", config.marketCheckIntervalSeconds, 60);
     config.newsCheckIntervalSeconds = parseInterval(
         "BOT_NEWS_CHECK_INTERVAL_SECONDS", config.newsCheckIntervalSeconds, 300);
+    if (const auto found = values.find("BOT_NEWS_ALERTS_PER_HOUR"); found != values.end()) {
+        long maximumPerHour = 0;
+        const auto* begin = found->second.data();
+        const auto* end = begin + found->second.size();
+        const auto [position, error] = std::from_chars(begin, end, maximumPerHour);
+        if (error != std::errc{} || position != end || maximumPerHour < 1 || maximumPerHour > 120) {
+            throw AppError(ErrorCode::Configuration,
+                           "BOT_NEWS_ALERTS_PER_HOUR must be an integer from 1 to 120");
+        }
+        config.newsNotificationsPerHour = maximumPerHour;
+    }
+    if (const auto found = values.find("BOT_NEWS_GEMINI_SUMMARIES_PER_HOUR"); found != values.end()) {
+        long maximumSummaries = 0;
+        const auto* begin = found->second.data();
+        const auto* end = begin + found->second.size();
+        const auto [position, error] = std::from_chars(begin, end, maximumSummaries);
+        if (error != std::errc{} || position != end || maximumSummaries < 1 || maximumSummaries > 120) {
+            throw AppError(ErrorCode::Configuration,
+                           "BOT_NEWS_GEMINI_SUMMARIES_PER_HOUR must be an integer from 1 to 120");
+        }
+        config.newsGeminiSummariesPerHour = maximumSummaries;
+    }
+    config.signalAlertCooldownSeconds = parseInterval(
+        "BOT_SIGNAL_ALERT_COOLDOWN_SECONDS", config.signalAlertCooldownSeconds, 0);
     if (const auto found = values.find("BOT_TIMEZONE"); found != values.end()) {
         const auto& zone = found->second;
         const bool valid = !zone.empty() && zone.size() <= 64 &&

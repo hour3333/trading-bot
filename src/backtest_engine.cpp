@@ -15,7 +15,7 @@ namespace trading_bot {
 namespace {
 
 using Clock = std::chrono::system_clock;
-constexpr std::size_t kSignalWarmupCandles = 34;
+constexpr std::size_t kSignalWarmupCandles = 50;
 constexpr std::size_t kMinimumCandles = kSignalWarmupCandles + 1;
 constexpr double kMaximumFeeBasisPoints = 1000.0;
 constexpr double kMaximumSlippageBasisPoints = 1000.0;
@@ -44,6 +44,15 @@ struct Position {
 
 std::optional<Clock::duration> intervalDuration(std::string_view interval) {
     using namespace std::chrono;
+    if (interval == "5m") {
+        return minutes(5);
+    }
+    if (interval == "15m") {
+        return minutes(15);
+    }
+    if (interval == "1h") {
+        return hours(1);
+    }
     if (interval == "30m") {
         return minutes(30);
     }
@@ -64,7 +73,9 @@ bool validSettings(const BacktestSettings& settings) {
            std::isfinite(settings.slippageBasisPoints) && settings.slippageBasisPoints >= 0.0 &&
            settings.slippageBasisPoints <= kMaximumSlippageBasisPoints &&
            std::isfinite(settings.riskFraction) && settings.riskFraction > 0.0 &&
-           settings.riskFraction <= kMaximumRiskFraction;
+           settings.riskFraction <= kMaximumRiskFraction &&
+           std::isfinite(settings.minimumRiskReward) && settings.minimumRiskReward >= 0.5 &&
+           settings.minimumRiskReward <= 10.0;
 }
 
 std::uint64_t fnv1a(std::string_view value) {
@@ -81,7 +92,8 @@ std::string makeRunKey(MarketSymbol market, std::span<const OhlcCandle> candles,
     std::ostringstream material;
     material << marketSymbolName(market) << '|' << std::setprecision(17)
              << settings.startingBalance << '|' << settings.feeBasisPoints << '|'
-             << settings.slippageBasisPoints << '|' << settings.riskFraction;
+             << settings.slippageBasisPoints << '|' << settings.riskFraction << '|'
+             << settings.minimumRiskReward;
     for (const auto& candle : candles) {
         material << '|' << candle.symbol << '|' << candle.source << '|' << candle.interval
                  << '|' << candle.startTime.time_since_epoch().count()
@@ -364,7 +376,8 @@ BacktestResult BacktestEngine::run(MarketSymbol market, std::span<const OhlcCand
                                    const BacktestSettings& settings, Clock::time_point asOf) {
     auto result = baseResult(market, candles, settings);
     if (!validSettings(settings)) {
-        return invalid(std::move(result), "backtest balance, fees, slippage, or risk settings are invalid");
+        return invalid(std::move(result),
+                       "backtest balance, costs, risk, or minimum risk/reward settings are invalid");
     }
 
     std::string validationReason;
@@ -376,7 +389,7 @@ BacktestResult BacktestEngine::run(MarketSymbol market, std::span<const OhlcCand
     if (candles.size() < kMinimumCandles) {
         result.minimumRequiredCandles = kMinimumCandles;
         return insufficient(std::move(result),
-                            "at least 34 warm-up candles and one later execution candle are required");
+                            "at least 50 indicator warm-up candles and one later execution candle are required");
     }
 
     result.status = BacktestStatus::Complete;
@@ -398,7 +411,7 @@ BacktestResult BacktestEngine::run(MarketSymbol market, std::span<const OhlcCand
         if (!position && balance > 0.0) {
             // The decision sees only candles before this execution candle.
             const auto scenario = SignalEngine::evaluateHistorical(
-                market, candles.first(executionIndex));
+                market, candles.first(executionIndex), settings.minimumRiskReward);
             if (scenario.dataStatus == SignalDataStatus::Ready &&
                 scenario.state != SignalState::Wait && scenario.entryZoneLow &&
                 scenario.entryZoneHigh && scenario.stopLoss && scenario.takeProfit1 &&
@@ -545,7 +558,8 @@ std::string formatBacktestPerformance(const BacktestResult& result) {
            << number(result.maximumDrawdownPercent, 2) << "%)\n"
            << "Fees: " << number(result.settings.feeBasisPoints, 1)
            << " bps per fill | slippage: " << number(result.settings.slippageBasisPoints, 1)
-           << " bps per fill\n"
+           << " bps per fill | minimum TP1 risk/reward: 1:" << number(result.settings.minimumRiskReward, 2)
+           << "\n"
            << "Sample size is limited to the supplied historical candles; results are simulated, not predictive.";
     return output.str();
 }

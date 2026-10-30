@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,13 @@ class Database;
 class MonitoringScheduler;
 class EconomicCalendarService;
 
+struct SignalCommandSettings {
+    std::string market{"XAU/USD"};
+    std::string timeframe{"M5"};
+    double minimumRiskReward{1.5};
+    std::string timezone{"Asia/Phnom_Penh"};
+};
+
 class TelegramCommandHandler {
 public:
     explicit TelegramCommandHandler(MarketDataService& marketDataService,
@@ -25,8 +33,11 @@ public:
                                     Database* database = nullptr,
                                     BacktestSettings backtestSettings = {},
                                     MonitoringScheduler* scheduler = nullptr,
-                                    EconomicCalendarService* calendarService = nullptr);
-    [[nodiscard]] std::string handle(std::string_view messageText) const;
+                                    EconomicCalendarService* calendarService = nullptr,
+                                    SignalCommandSettings signalSettings = {});
+    [[nodiscard]] std::string handle(
+        std::string_view messageText,
+        std::optional<std::int64_t> userId = std::nullopt) const;
 
 private:
     MarketDataService* marketDataService_;
@@ -35,6 +46,7 @@ private:
     BacktestSettings backtestSettings_;
     MonitoringScheduler* scheduler_;
     EconomicCalendarService* calendarService_;
+    SignalCommandSettings signalSettings_;
 };
 
 class TelegramBot {
@@ -51,7 +63,8 @@ public:
                 Database* database = nullptr,
                 BacktestSettings backtestSettings = {},
                 MonitoringScheduler* scheduler = nullptr,
-                EconomicCalendarService* calendarService = nullptr);
+                EconomicCalendarService* calendarService = nullptr,
+                SignalCommandSettings signalSettings = {});
 
     // Runs until terminated. Transient transport/API failures are retried with
     // capped exponential backoff; Telegram flood-control delays are respected.

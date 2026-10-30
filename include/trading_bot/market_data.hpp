@@ -3,6 +3,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace trading_bot {
@@ -48,6 +49,18 @@ class MarketDataService {
 public:
     virtual ~MarketDataService() = default;
     [[nodiscard]] virtual MarketDataSnapshot getSnapshot(MarketSymbol symbol) = 0;
+
+    // Returns genuine provider candles at the requested fixed interval. The
+    // default implementation may aggregate complete, contiguous lower
+    // timeframe candles (for example 30m -> H1/H4); it never interpolates or
+    // manufactures candles from a spot quote.
+    [[nodiscard]] virtual MarketDataSnapshot getSnapshot(
+        MarketSymbol symbol, std::string_view timeframe);
 };
+
+// Applies a fixed signal timeframe to a provider snapshot. Unsupported or
+// incomplete interval conversions return an empty candle set.
+[[nodiscard]] MarketDataSnapshot filterMarketSnapshotToTimeframe(
+    MarketDataSnapshot snapshot, std::string_view timeframe);
 
 } // namespace trading_bot

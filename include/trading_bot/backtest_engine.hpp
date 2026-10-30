@@ -18,6 +18,7 @@ struct BacktestSettings {
     double feeBasisPoints{10.0};
     double slippageBasisPoints{5.0};
     double riskFraction{0.01};
+    double minimumRiskReward{1.5};
 };
 
 struct SimulatedTrade {

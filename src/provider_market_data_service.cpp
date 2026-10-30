@@ -24,6 +24,7 @@ constexpr std::string_view kGoldSpotCacheKey = "gold-api:xau-usd:spot";
 constexpr std::string_view kGoldOhlcCacheKey = "gold-api:xau:ohlc:range-24h";
 constexpr std::string_view kBitcoinSpotCacheKey = "coingecko:bitcoin-usd:spot";
 constexpr std::string_view kBitcoinOhlcCacheKey = "coingecko:bitcoin:ohlc:days-1";
+constexpr std::string_view kBitcoinH4CacheKey = "coingecko:bitcoin:ohlc:days-30";
 constexpr std::string_view kGoldSource = "Gold API";
 constexpr std::string_view kBitcoinSource = "CoinGecko Demo API";
 
@@ -218,11 +219,14 @@ OhlcCandle parseGoldCandle(const nlohmann::json& payload,
 }
 
 std::vector<OhlcCandle> parseBitcoinCandles(const nlohmann::json& payload,
-                                            Clock::time_point fetchedAt) {
+                                            Clock::time_point fetchedAt, int days = 1) {
     if (!payload.is_array() || payload.empty()) {
         throw AppError(ErrorCode::Json, "CoinGecko OHLC response contains no candles");
     }
     const auto now = Clock::now();
+    const bool fourHour = days >= 3;
+    const auto duration = fourHour ? std::chrono::hours(4) : std::chrono::minutes(30);
+    const auto maximumAge = std::chrono::hours((days + 1) * 24);
     std::vector<OhlcCandle> candles;
     candles.reserve(payload.size());
     for (const auto& row : payload) {
@@ -236,17 +240,17 @@ std::vector<OhlcCandle> parseBitcoinCandles(const nlohmann::json& payload,
             throw AppError(ErrorCode::Json, "CoinGecko returned an invalid candle timestamp");
         }
         const auto end = fromEpochMilliseconds(closeTimestamp);
-        const auto start = end - std::chrono::minutes(30);
+        const auto start = end - duration;
         const double open = row[1].is_number() ? row[1].get<double>() : 0.0;
         const double high = row[2].is_number() ? row[2].get<double>() : 0.0;
         const double low = row[3].is_number() ? row[3].get<double>() : 0.0;
         const double close = row[4].is_number() ? row[4].get<double>() : 0.0;
-        validateTimestamp(end, now, std::chrono::hours(48));
+        validateTimestamp(end, now, maximumAge);
         validatePrices(open, high, low, close);
         candles.push_back(OhlcCandle{
-            "BTC/USD", std::string(kBitcoinSource), "30m",
+            "BTC/USD", std::string(kBitcoinSource), fourHour ? "4h" : "30m",
             start, end, open, high, low, close, fetchedAt,
-            now - end > std::chrono::hours(2),
+            now - end > duration * 2,
         });
     }
     std::sort(candles.begin(), candles.end(), [](const OhlcCandle& left, const OhlcCandle& right) {
@@ -317,6 +321,49 @@ MarketDataSnapshot ProviderMarketDataService::getSnapshot(MarketSymbol symbol) {
         }
     }
     return snapshot;
+}
+
+MarketDataSnapshot ProviderMarketDataService::getSnapshot(
+    MarketSymbol symbol, std::string_view timeframe) {
+    MarketDataSnapshot snapshot;
+    snapshot.market = symbol;
+    snapshot.historyDescription = "Configured provider fixed-interval history";
+    std::lock_guard lock(requestMutex_);
+    if (symbol == MarketSymbol::XauUsd) {
+        snapshot.historyDescription =
+            "Gold API free OHLC is a requested-range aggregate; no fixed M5/M15/H1/H4 candles are available";
+        try {
+            snapshot.quote = getGoldQuote();
+        } catch (const std::exception&) {
+            snapshot.quote.reset();
+        }
+        return filterMarketSnapshotToTimeframe(std::move(snapshot), timeframe);
+    }
+
+    try {
+        snapshot.quote = getBitcoinQuote();
+    } catch (const std::exception&) {
+        snapshot.quote.reset();
+    }
+    if (timeframe == "H4" || timeframe == "h4" || timeframe == "4h") {
+        try {
+            snapshot.candles = getBitcoinCandles(30);
+        } catch (const std::exception&) {
+            snapshot.candles.clear();
+        }
+        snapshot.historyDescription = "CoinGecko Demo OHLC, native 4h candles from 30-day history";
+    } else if (timeframe == "H1" || timeframe == "h1" || timeframe == "1h") {
+        try {
+            snapshot.candles = getBitcoinCandles(1);
+        } catch (const std::exception&) {
+            snapshot.candles.clear();
+        }
+        snapshot.historyDescription = "CoinGecko Demo OHLC 30m candles; H1 requires complete 2-candle aggregation";
+    } else {
+        snapshot.historyDescription =
+            "CoinGecko Demo OHLC does not provide M5/M15 fixed candles on the configured free endpoint";
+    }
+    return filterMarketSnapshotToTimeframe(std::move(snapshot), timeframe);
 }
 
 std::optional<MarketQuote> ProviderMarketDataService::getGoldQuote() {
@@ -400,14 +447,19 @@ std::vector<OhlcCandle> ProviderMarketDataService::getGoldCandles() {
     return candles;
 }
 
-std::vector<OhlcCandle> ProviderMarketDataService::getBitcoinCandles() {
-    constexpr auto ttl = std::chrono::minutes(5);
-    const auto cache = database_->loadProviderCache(kBitcoinOhlcCacheKey);
+std::vector<OhlcCandle> ProviderMarketDataService::getBitcoinCandles(int days) {
+    if (days != 1 && days != 30) {
+        return {};
+    }
+    const auto cacheKey = days == 30 ? kBitcoinH4CacheKey : kBitcoinOhlcCacheKey;
+    const auto ttl = days == 30 ? std::chrono::duration_cast<std::chrono::seconds>(std::chrono::minutes(10))
+                                : std::chrono::duration_cast<std::chrono::seconds>(std::chrono::minutes(5));
+    const auto cache = database_->loadProviderCache(cacheKey);
     const auto now = Clock::now();
     if (cache && cacheIsFresh(*cache, ttl, now)) {
         try {
-            auto candles = parseBitcoinCandles(parseJson(cache->payload), cache->fetchedAt);
-            database_->replaceMarketCandles(kBitcoinOhlcCacheKey, candles);
+            auto candles = parseBitcoinCandles(parseJson(cache->payload), cache->fetchedAt, days);
+            database_->replaceMarketCandles(cacheKey, candles);
             return candles;
         } catch (const std::exception&) {
             // Fetch a replacement if the cached provider response is malformed.
@@ -416,18 +468,19 @@ std::vector<OhlcCandle> ProviderMarketDataService::getBitcoinCandles() {
     if (coingeckoDemoApiKey_ && !coingeckoDemoApiKey_->empty()) {
         try {
             const auto response = get(*httpClient_,
-                "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=1",
+                "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=" +
+                    std::to_string(days),
                 {"x-cg-demo-api-key: " + *coingeckoDemoApiKey_});
             const auto fetchedAt = Clock::now();
-            auto candles = parseBitcoinCandles(parseJson(response.body), fetchedAt);
-            database_->saveProviderCache(kBitcoinOhlcCacheKey, response.body, fetchedAt);
-            database_->replaceMarketCandles(kBitcoinOhlcCacheKey, candles);
+            auto candles = parseBitcoinCandles(parseJson(response.body), fetchedAt, days);
+            database_->saveProviderCache(cacheKey, response.body, fetchedAt);
+            database_->replaceMarketCandles(cacheKey, candles);
             return candles;
         } catch (const std::exception&) {
             // Fall back to validated persisted candles and mark them delayed.
         }
     }
-    auto candles = database_->loadMarketCandles(kBitcoinOhlcCacheKey);
+    auto candles = database_->loadMarketCandles(cacheKey);
     markDelayed(candles);
     return candles;
 }

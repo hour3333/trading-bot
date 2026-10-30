@@ -35,13 +35,20 @@ struct AiExplanation {
 class FinancialInsightService {
 public:
     FinancialInsightService(Database& database, FinancialNewsService& newsService,
-                            GeminiClient* geminiClient);
+                            GeminiClient* geminiClient,
+                            std::size_t maxGoldNewsSummariesPerHour = 6);
 
     [[nodiscard]] NewsSnapshot getLatestNews(std::size_t limit = 6);
     [[nodiscard]] AiExplanation explainNews(const NewsSnapshot& news);
+    [[nodiscard]] AiExplanation explainGoldNews(const NewsArticle& article);
     [[nodiscard]] AiExplanation explainSignal(const SignalScenario& scenario);
+    [[nodiscard]] AiExplanation explainSignal(const SignalScenario& scenario,
+                                             const NewsSnapshot& news);
     [[nodiscard]] AiExplanation analyzeMarkets(
         std::span<const TechnicalAnalysisResult> analyses, const NewsSnapshot& news);
+    [[nodiscard]] AiExplanation analyzeGoldM5(
+        const TechnicalAnalysisResult& analysis, const SignalScenario& scenario,
+        const NewsSnapshot& news);
 
 private:
     [[nodiscard]] AiExplanation generateCached(std::string_view task,
@@ -50,6 +57,7 @@ private:
     Database* database_;
     FinancialNewsService* newsService_;
     GeminiClient* geminiClient_;
+    std::size_t maxGoldNewsSummariesPerHour_;
 };
 
 [[nodiscard]] std::string formatAiExplanation(const AiExplanation& explanation);

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,7 +23,17 @@ struct NewsArticle {
     std::string source;
     std::chrono::system_clock::time_point publishedAt;
     std::string url;
+    // RSS guid / Atom id when the publisher supplies one. Kept as data only.
+    std::string id;
+    // Publisher update time, distinct from the original publication time.
+    std::optional<std::chrono::system_clock::time_point> updatedAt;
 };
+
+enum class NewsImpact { High, Medium, Low };
+
+[[nodiscard]] NewsImpact classifyGoldNews(const NewsArticle& article);
+[[nodiscard]] bool isGoldRelevantNews(const NewsArticle& article);
+[[nodiscard]] std::string newsImpactName(NewsImpact impact);
 
 struct NewsSnapshot {
     std::vector<NewsArticle> articles;

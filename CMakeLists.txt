@@ -29,6 +29,7 @@ add_library(trading_bot_core
     src/financial_insight.cpp
     src/financial_news.cpp
     src/gemini_client.cpp
+    src/gold_market_analysis.cpp
     src/http_client.cpp
     src/integration_verifier.cpp
     src/json_utils.cpp

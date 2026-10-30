@@ -49,15 +49,30 @@ void configureTimezone(const std::string& timezone) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc > 2 || (argc == 2 && std::string_view(argv[1]) != "--verify-integrations")) {
-            throw trading_bot::AppError(trading_bot::ErrorCode::Configuration,
-                                        "Supported option: --verify-integrations");
+        bool verifyOnly = false;
+        std::filesystem::path dotenvPath = ".env";
+        if (argc > 1) {
+            if (std::string_view(argv[1]) != "--verify-integrations") {
+                throw trading_bot::AppError(
+                    trading_bot::ErrorCode::Configuration,
+                    "Supported options: none, --verify-integrations [--env-file PATH]");
+            }
+            verifyOnly = true;
+            if (argc > 2) {
+                if (argc != 4 || std::string_view(argv[2]) != "--env-file" ||
+                    std::string_view(argv[3]).empty()) {
+                    throw trading_bot::AppError(
+                        trading_bot::ErrorCode::Configuration,
+                        "Usage: trading_bot --verify-integrations [--env-file PATH]");
+                }
+                dotenvPath = argv[3];
+            }
         }
-        const auto config = trading_bot::Config::load();
+        const auto config = trading_bot::Config::load(dotenvPath);
         configureTimezone(config.timezone);
         std::signal(SIGINT, requestShutdown);
         std::signal(SIGTERM, requestShutdown);
-        if (argc == 2) {
+        if (verifyOnly) {
             trading_bot::Database temporaryDatabase(":memory:");
             const trading_bot::HttpClient verificationHttp(config.httpTimeoutSeconds);
             const auto checks = trading_bot::verifyIntegrations(config, temporaryDatabase,
@@ -92,7 +107,8 @@ int main(int argc, char** argv) {
             geminiClient.emplace(*config.geminiApiKey, serviceHttp);
         }
         trading_bot::FinancialInsightService financialInsights(
-            database, financialNews, geminiClient ? &*geminiClient : nullptr);
+            database, financialNews, geminiClient ? &*geminiClient : nullptr,
+            static_cast<std::size_t>(config.newsGeminiSummariesPerHour));
         trading_bot::ProviderMarketDataService marketData(
             database, serviceHttp, config.coingeckoDemoApiKey, config.goldApiKey);
         const trading_bot::BacktestSettings backtestSettings{
@@ -100,15 +116,33 @@ int main(int argc, char** argv) {
             config.backtestFeeBasisPoints,
             config.backtestSlippageBasisPoints,
             config.backtestRiskFraction,
+            config.signalMinimumRiskReward,
         };
-        const trading_bot::MonitoringSettings monitoringSettings{
-            std::chrono::seconds(config.marketCheckIntervalSeconds),
-            std::chrono::seconds(config.newsCheckIntervalSeconds),
-            config.timezone,
-        };
+        trading_bot::MonitoringSettings monitoringSettings;
+        monitoringSettings.marketCheckInterval =
+            std::chrono::seconds(config.marketCheckIntervalSeconds);
+        monitoringSettings.newsCheckInterval =
+            std::chrono::seconds(config.newsCheckIntervalSeconds);
+        monitoringSettings.newsNotificationsPerHour =
+            static_cast<std::size_t>(config.newsNotificationsPerHour);
+        monitoringSettings.newsGeminiSummariesPerHour =
+            static_cast<std::size_t>(config.newsGeminiSummariesPerHour);
+        monitoringSettings.timezone = config.timezone;
+        monitoringSettings.signalMarket = trading_bot::MarketSymbol::XauUsd;
+        monitoringSettings.signalTimeframe = config.signalTimeframe;
+        monitoringSettings.minimumRiskReward = config.signalMinimumRiskReward;
+        monitoringSettings.signalAlertCooldown =
+            std::chrono::seconds(config.signalAlertCooldownSeconds);
+        monitoringSettings.alertMode = config.alertMode;
+        monitoringSettings.tradingMode = config.tradingMode;
+        monitoringSettings.automaticSignalAnalysis = config.automaticSignalAnalysis;
+        monitoringSettings.allowDuplicateSignalAlerts = config.allowDuplicateSignalAlerts;
+        const trading_bot::SignalCommandSettings signalCommandSettings{
+            config.signalMarket, config.signalTimeframe,
+            config.signalMinimumRiskReward, config.timezone};
         trading_bot::MonitoringScheduler scheduler(
             database, marketData, financialNews, alertTelegramApi, logger,
-            config.telegramAllowedUserIds, monitoringSettings);
+            config.telegramAllowedUserIds, monitoringSettings, &financialInsights);
         const auto nextOffset = database.metadataInt64("telegram_next_update_offset").value_or(0);
         trading_bot::TelegramBot bot(
             telegramApi, logger, marketData, config.telegramAllowedUserIds,
@@ -116,7 +150,8 @@ int main(int argc, char** argv) {
             [&database](std::int64_t offset) {
                 database.setMetadataInt64("telegram_next_update_offset", offset);
             },
-            &financialInsights, &database, backtestSettings, &scheduler, &economicCalendar);
+            &financialInsights, &database, backtestSettings, &scheduler, &economicCalendar,
+            signalCommandSettings);
 
         std::jthread schedulerThread([&scheduler](std::stop_token stopToken) {
             scheduler.run(stopToken);
@@ -129,7 +164,13 @@ int main(int argc, char** argv) {
             {"long_poll_timeout_seconds", config.telegramLongPollTimeoutSeconds},
             {"market_check_interval_seconds", config.marketCheckIntervalSeconds},
             {"news_check_interval_seconds", config.newsCheckIntervalSeconds},
+            {"news_alerts_per_hour", config.newsNotificationsPerHour},
+            {"news_gemini_summaries_per_hour", config.newsGeminiSummariesPerHour},
             {"timezone", config.timezone},
+            {"signal_market", config.signalMarket},
+            {"signal_timeframe", config.signalTimeframe},
+            {"alert_mode", config.alertMode},
+            {"trading_mode", config.tradingMode},
         });
         bot.run([] { return shutdownRequested != 0; });
         schedulerThread.request_stop();

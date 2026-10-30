@@ -29,6 +29,7 @@ using Clock = std::chrono::system_clock;
 constexpr std::size_t kMaximumFeedBytes = 2 * 1024 * 1024;
 constexpr std::size_t kMaximumHeadlineBytes = 300;
 constexpr std::size_t kMaximumUrlBytes = 700;
+constexpr std::size_t kMaximumArticleIdBytes = 512;
 
 std::string trim(std::string_view value) {
     const auto first = value.find_first_not_of(" \t\r\n");
@@ -271,6 +272,42 @@ std::string lowerAscii(std::string_view value) {
     return result;
 }
 
+bool containsHeadlineTerm(std::string_view headline, std::string_view term) {
+    const bool singleWord = term.find(' ') == std::string_view::npos &&
+        std::all_of(term.begin(), term.end(), [](unsigned char character) {
+            return std::isalnum(character) != 0;
+        });
+    auto position = headline.find(term);
+    while (position != std::string_view::npos) {
+        if (!singleWord) return true;
+        const bool leftBoundary = position == 0 ||
+            std::isalnum(static_cast<unsigned char>(headline[position - 1])) == 0;
+        const auto after = position + term.size();
+        const bool rightBoundary = after == headline.size() ||
+            std::isalnum(static_cast<unsigned char>(headline[after])) == 0;
+        if (leftBoundary && rightBoundary) return true;
+        position = headline.find(term, position + 1);
+    }
+    return false;
+}
+
+std::string safeLine(std::string_view value, std::size_t maximumBytes) {
+    std::string result;
+    result.reserve(std::min(value.size(), maximumBytes));
+    for (const unsigned char character : value) {
+        if (character < 0x20U || character == 0x7fU) {
+            if (!result.empty() && result.back() != ' ') result.push_back(' ');
+            continue;
+        }
+        result.push_back(static_cast<char>(character));
+        if (result.size() >= maximumBytes) break;
+    }
+    while (!result.empty() && std::isspace(static_cast<unsigned char>(result.back()))) {
+        result.pop_back();
+    }
+    return result;
+}
+
 std::string_view httpsHost(std::string_view url) {
     constexpr std::string_view prefix = "https://";
     if (!url.starts_with(prefix)) {
@@ -340,14 +377,16 @@ std::vector<NewsArticle> parseFeed(std::string_view xml, const NewsFeed& feed,
         auto headline = nodeText(entry, "title");
         auto url = articleLink(entry, atom);
         auto dateText = atom ? nodeText(entry, "published") : nodeText(entry, "pubDate");
-        if (dateText.empty()) {
-            dateText = nodeText(entry, "updated");
-        }
         auto publishedAt = parsePublicationDate(std::move(dateText));
+        auto updatedAt = parsePublicationDate(nodeText(entry, "updated"));
+        if (updatedAt && publishedAt && *updatedAt < *publishedAt) updatedAt.reset();
+        const auto activityAt = updatedAt.value_or(
+            publishedAt.value_or(Clock::time_point{}));
         if (headline.empty() || headline.size() > 4096 || !publishedAt ||
             !validHttpsUrl(url) || lowerAscii(httpsHost(url)) != lowerAscii(httpsHost(feed.url)) ||
             *publishedAt > asOf + std::chrono::minutes(5) ||
-            asOf - *publishedAt > maximumAge) {
+            activityAt > asOf + std::chrono::minutes(5) ||
+            asOf - activityAt > maximumAge) {
             continue;
         }
 
@@ -355,9 +394,12 @@ std::vector<NewsArticle> parseFeed(std::string_view xml, const NewsFeed& feed,
         if (source.empty()) {
             source = feedTitle;
         }
+        auto articleId = nodeText(entry, atom ? "id" : "guid");
         articles.push_back(NewsArticle{
             truncateUtf8(std::move(headline), kMaximumHeadlineBytes),
             truncateUtf8(std::move(source), 120), *publishedAt, std::move(url),
+            truncateUtf8(std::move(articleId), kMaximumArticleIdBytes),
+            updatedAt,
         });
     }
     return articles;
@@ -438,6 +480,56 @@ std::vector<NewsFeed> defaultFinancialNewsFeeds() {
     };
 }
 
+bool isGoldRelevantNews(const NewsArticle& article) {
+    static constexpr std::string_view terms[]{
+        "gold", "xau", "bullion", "precious metal", "federal reserve", "fomc",
+        "fed ", "interest rate", "rate cut", "rate hike", "inflation",
+        "consumer price", "cpi", "pce", "nonfarm payroll", "non-farm payroll",
+        "employment situation", "treasury yield", "real yield", "us dollar",
+        "u.s. dollar", "dollar index", "dxy", "geopolitical", "war", "invasion",
+        "sanction", "ceasefire", "military attack", "armed conflict", "bitcoin", "btc",
+        "crypto", "digital asset", "stock market", "equity market", "financial market",
+        "economy", "economic", "gdp", "oil price", "bond market", "market outlook"};
+    const auto headline = lowerAscii(article.headline);
+    return std::any_of(std::begin(terms), std::end(terms), [&](std::string_view term) {
+        return containsHeadlineTerm(headline, term);
+    });
+}
+
+NewsImpact classifyGoldNews(const NewsArticle& article) {
+    const auto headline = lowerAscii(article.headline);
+    static constexpr std::string_view highImpactTerms[]{
+        "fomc", "consumer price index", "cpi inflation", "cpi", "nonfarm payroll",
+        "non-farm payroll", "employment situation", "interest rate decision",
+        "rate decision", "rate cut", "rate hike", "rate hold", "cuts rates",
+        "raises rates", "holds rates", "war", "invasion", "sanction", "ceasefire",
+        "military attack", "armed conflict", "gross domestic product", "gdp",
+        "retail sales", "producer price index", "jobless claims"};
+    if (std::any_of(std::begin(highImpactTerms), std::end(highImpactTerms),
+                    [&](std::string_view term) { return containsHeadlineTerm(headline, term); })) {
+        return NewsImpact::High;
+    }
+    static constexpr std::string_view mediumImpactTerms[]{
+        "gold", "xau", "bullion", "precious metal", "federal reserve", "fomc",
+        "fed ", "interest rate", "rate cut", "rate hike", "inflation", "consumer price",
+        "cpi", "pce", "nonfarm payroll", "non-farm payroll", "employment situation",
+        "treasury yield", "real yield", "us dollar", "u.s. dollar", "dollar index", "dxy",
+        "geopolitical", "war", "invasion", "sanction", "ceasefire", "military attack",
+        "armed conflict", "economic report", "economic data", "central bank"};
+    return std::any_of(std::begin(mediumImpactTerms), std::end(mediumImpactTerms),
+                       [&](std::string_view term) { return containsHeadlineTerm(headline, term); })
+        ? NewsImpact::Medium : NewsImpact::Low;
+}
+
+std::string newsImpactName(NewsImpact impact) {
+    switch (impact) {
+    case NewsImpact::High: return "HIGH";
+    case NewsImpact::Medium: return "MEDIUM";
+    case NewsImpact::Low: return "LOW";
+    }
+    return "LOW";
+}
+
 RssFinancialNewsService::RssFinancialNewsService(
     Database& database, const HttpClientInterface& httpClient, std::vector<NewsFeed> feeds,
     std::chrono::seconds cacheTtl, std::chrono::hours maximumArticleAge)
@@ -510,7 +602,8 @@ NewsSnapshot RssFinancialNewsService::getLatestNews(
     }
 
     std::stable_sort(gathered.begin(), gathered.end(), [](const NewsArticle& left, const NewsArticle& right) {
-        return left.publishedAt > right.publishedAt;
+        return left.updatedAt.value_or(left.publishedAt) >
+               right.updatedAt.value_or(right.publishedAt);
     });
     std::unordered_set<std::string> seenHeadlines;
     std::unordered_set<std::string> seenUrls;
@@ -540,10 +633,15 @@ std::string formatNewsMessage(const NewsSnapshot& snapshot, std::size_t maxArtic
         for (std::size_t index = 0; index < count; ++index) {
             const auto& article = snapshot.articles[index];
             std::ostringstream entry;
-            entry << '\n' << (index + 1) << ". " << article.headline << '\n'
-                  << "Source: " << article.source << " | Published: "
-                  << formatUtc(article.publishedAt) << '\n'
-                  << article.url << '\n';
+            entry << '\n' << (index + 1) << ". " << safeLine(article.headline, 300) << '\n'
+                  << "Impact: " << newsImpactName(classifyGoldNews(article)) << '\n'
+                  << "Source: " << safeLine(article.source, 120) << " | Published: "
+                  << formatUtc(article.publishedAt);
+            if (article.updatedAt && *article.updatedAt > article.publishedAt) {
+                entry << " | Updated: " << formatUtc(*article.updatedAt);
+            }
+            entry << '\n'
+                  << safeLine(article.url, kMaximumUrlBytes) << '\n';
             if (output.size() + entry.str().size() > maxCharacters - 150) {
                 break;
             }

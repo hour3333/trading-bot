@@ -10,7 +10,7 @@
 
 namespace trading_bot {
 
-enum class MarketTimeframe { M30, H4, D4 };
+enum class MarketTimeframe { M5, M15, H1, M30, H4, D4 };
 enum class AnalysisStatus { Complete, InsufficientData, InvalidData };
 enum class TrendClassification { Bullish, Bearish, Neutral };
 
@@ -28,6 +28,8 @@ struct SupportResistanceLevels {
 
 struct TechnicalAnalysisSettings {
     std::size_t smaPeriod{20};
+    std::size_t trendFastEmaPeriod{20};
+    std::size_t trendSlowEmaPeriod{50};
     std::size_t fastEmaPeriod{12};
     std::size_t slowEmaPeriod{26};
     std::size_t rsiPeriod{14};
@@ -49,6 +51,8 @@ struct TechnicalAnalysisResult {
     TechnicalAnalysisSettings settings;
     std::string reason;
     std::optional<double> sma;
+    std::optional<double> ema20;
+    std::optional<double> ema50;
     std::optional<double> emaFast;
     std::optional<double> emaSlow;
     std::optional<double> rsi;
