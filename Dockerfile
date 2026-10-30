@@ -18,8 +18,9 @@ WORKDIR /src
 COPY . .
 RUN cmake -S . -B /build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_FLAGS_RELEASE="-O1 -DNDEBUG" \
         -DBUILD_TESTING=OFF \
-    && cmake --build /build --parallel 2
+    && cmake --build /build --parallel 1
 
 FROM debian:bookworm-slim AS runtime
 

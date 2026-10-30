@@ -54,6 +54,9 @@ target_link_libraries(trading_bot_core
         LibXml2::LibXml2
 )
 target_compile_features(trading_bot_core PUBLIC cxx_std_20)
+target_compile_definitions(trading_bot_core PUBLIC
+    $<$<PLATFORM_ID:Linux>:_POSIX_C_SOURCE=200809L>
+)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(trading_bot_core PRIVATE -Wall -Wextra -Wpedantic)

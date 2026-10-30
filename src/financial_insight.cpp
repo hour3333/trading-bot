@@ -8,6 +8,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <ctime>
 #include <iomanip>
 #include <span>
 #include <sstream>
