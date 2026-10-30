@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "buildAptPackages": [
+    "libcurl4-openssl-dev",
+    "libsqlite3-dev",
+    "nlohmann-json3-dev",
+    "libxml2-dev",
+    "pkg-config"
+  ],
+  "deploy": {
+    "aptPackages": ["libcurl4", "libsqlite3-0", "libxml2"]
+  }
+}
